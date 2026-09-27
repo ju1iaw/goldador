@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from meta.loaders.members import load_members
+from meta.validator.src.github_utils import GitHubRateLimitError
 from meta.validator.src.reporter import ErrorCode, Reporter, bind_reporter
 from meta.validator.src.rules.members import MemberValidationError, MemberValidator
 
@@ -14,6 +15,7 @@ from .helper import has_error, no_errors
 from .mock_clients.mock_github_client import (
     MockGithubClientNotFound,
     MockGithubClientRateLimitExceeded,
+    MockGithubClientServerError,
     MockGithubClientValid,
     make_get_github_client,
 )
@@ -112,7 +114,27 @@ def test_rate_limited_github_username(
         make_get_github_client(mock_github),
     )
 
-    with pytest.raises(MemberValidationError):
+    with pytest.raises(GitHubRateLimitError, match="GitHub API rate limit exceeded"):
+        MemberValidator(members, reporter).validate()
+
+
+def test_unexpected_github_error_aborts_member_validation(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A non-rate-limit GitHub failure should abort member validation."""
+    reporter = Reporter()
+    members = load_members(
+        bind_reporter(reporter),
+        "meta/tests/members/for_teams/alice.toml",
+    )
+    assert no_errors(reporter)
+
+    monkeypatch.setattr(
+        GITHUB_CLIENT_FUNCTION_PATH,
+        make_get_github_client(MockGithubClientServerError()),
+    )
+
+    with pytest.raises(MemberValidationError, match="Unexpected GitHub API error"):
         MemberValidator(members, reporter).validate()
 
 

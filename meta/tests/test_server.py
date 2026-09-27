@@ -8,9 +8,10 @@ from typing import TYPE_CHECKING
 
 from fastapi.testclient import TestClient
 
+from meta.clients.github_client import get_github_client
 from meta.loaders.errors import GovernanceLoadError
 from meta.validator.src import server
-from meta.validator.src.github_utils import GoldadorGitHubError
+from meta.validator.src.github_utils import GitHubRateLimitError, GoldadorGitHubError
 
 if TYPE_CHECKING:
     from _pytest.logging import LogCaptureFixture
@@ -56,6 +57,44 @@ def test_validate_maps_ref_not_found_to_404(monkeypatch: MonkeyPatch) -> None:
     detail = response.json()["detail"]
     assert detail["ref"] == "missing"
     assert error_message in detail["error"]
+
+
+def test_validate_maps_github_rate_limit_to_429(monkeypatch: MonkeyPatch) -> None:
+    """GitHub rate limits should be returned to the caller as HTTP 429."""
+    error_message = "GitHub API rate limit exceeded. Try again later."
+
+    def fail(_ref: str) -> dict[str, object]:
+        raise GitHubRateLimitError
+
+    monkeypatch.setattr(server, "run_validation_for_ref", fail)
+    client = TestClient(server.app)
+
+    response = client.post("/validate", json={"ref": "abc123"})
+
+    assert response.status_code == HTTPStatus.TOO_MANY_REQUESTS
+    detail = response.json()["detail"]
+    assert detail["ref"] == "abc123"
+    assert detail["error"] == error_message
+
+
+def test_github_client_does_not_retry(monkeypatch: MonkeyPatch) -> None:
+    """The GitHub client must not sleep through rate-limit windows."""
+    created: dict[str, object] = {}
+
+    class FakeGithub:
+        def __init__(self, *, auth: object, retry: object) -> None:
+            created["auth"] = auth
+            created["retry"] = retry
+
+    monkeypatch.setenv("SYNC_GITHUB_TOKEN", "token")
+    monkeypatch.setattr("meta.clients.github_client.Github", FakeGithub)
+    get_github_client.cache_clear()
+    try:
+        get_github_client()
+    finally:
+        get_github_client.cache_clear()
+
+    assert created["retry"] is None
 
 
 def test_unhandled_exception_returns_500(

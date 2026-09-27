@@ -6,11 +6,12 @@ import asyncio
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
-from github import GithubException
+from github import GithubException, RateLimitExceededException
 
 from meta.clients.github_client import get_github_client
 from meta.clients.keycloak_client import get_keycloak_client
 from meta.logger import get_app_logger
+from meta.validator.src.github_utils import GitHubRateLimitError
 from meta.validator.src.reporter import ErrorCode
 
 if TYPE_CHECKING:
@@ -67,6 +68,8 @@ class MemberValidator:
         github_client = get_github_client()
         try:
             github_client.get_user(github_username)
+        except RateLimitExceededException as e:
+            raise GitHubRateLimitError from e
         except GithubException as e:
             if e.status == HTTPStatus.NOT_FOUND:
                 self.reporter.insert_error(
